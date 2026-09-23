@@ -1,5 +1,8 @@
 # Agentic Governance Outcomes
 
+[![CI](https://github.com/jesse-pokora/agentic-governance-outcomes/actions/workflows/ci.yml/badge.svg)](https://github.com/jesse-pokora/agentic-governance-outcomes/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **Four SLIs that make the other SLIs interpretable.** An extension for
 [microsoft/agent-governance-toolkit](https://github.com/microsoft/agent-governance-toolkit),
 written against *Agent SRE Governance 1.0* section 4 and registered through the
