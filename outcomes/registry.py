@@ -14,6 +14,7 @@ for anything, and nothing built in changes behaviour because they exist.
 from __future__ import annotations
 
 from agt import SLIRegistry
+from check_pass_rate import CheckPassRate
 from gate_coverage import GateCoverage
 from refusal_attribution import RefusalAttribution
 from sample_floor import with_sample_floor
@@ -21,7 +22,7 @@ from sample_floor import with_sample_floor
 #: The SLIs this package adds. Each one measures whether some *other*
 #: measurement can be believed, which is why they are additions rather than
 #: substitutes.
-EXTENSION_TYPES = (GateCoverage, RefusalAttribution)
+EXTENSION_TYPES = (CheckPassRate, GateCoverage, RefusalAttribution)
 
 
 def register(registry: SLIRegistry) -> tuple[str, ...]:

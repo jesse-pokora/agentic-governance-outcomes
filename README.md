@@ -1,6 +1,6 @@
 # Agentic Governance Outcomes
 
-**Three SLIs that make the other SLIs interpretable.** An extension for
+**Four SLIs that make the other SLIs interpretable.** An extension for
 [microsoft/agent-governance-toolkit](https://github.com/microsoft/agent-governance-toolkit),
 written against *Agent SRE Governance 1.0* section 4 and registered through the
 `SLIRegistry` extension point the spec provides.
@@ -31,10 +31,47 @@ about what it measured; it is silent about what it never saw.
 "the evaluator raised", so the resulting rate is part policy and part defect
 with no way to separate them.
 
+## A fourth thing, found by running it
+
+`PolicyCompliance.record_check` records a **running cumulative rate** as each
+measurement:
+
+```python
+rate = self._compliant / self._total
+return self.record(rate, metadata)
+```
+
+`compliance()` then reports the fraction of those running rates that met the
+target. At a target of 1.0 a running rate is at target only while nothing has
+failed yet — so the figure is really *the fraction of the window during which
+nothing had failed*, and one early failure holds it near zero however well the
+rest of the window goes.
+
+That makes it order-dependent. Same ten checks, nine passing:
+
+| Arrangement | `compliance()` | actual pass rate |
+|---|---|---|
+| nine passes, then the failure | **0.900** | 0.900 |
+| the failure, then nine passes | **0.000** | 0.900 |
+
+`tests/test_order_dependence.py` is that comparison, run against the installed
+package so it fails loudly if the upstream behaviour changes.
+
+**This is not a spec violation.** Section 4.1 defines `compliance()` as the
+fraction of measurements meeting the target, and it is exactly that — a test
+asserts so. The surprise is in what `PolicyCompliance` chooses to record as a
+measurement, which the spec does not constrain.
+
+`CheckPassRate` records each check as itself, so `compliance()` is the pass
+rate and every permutation agrees. It is an additional view, not a correction:
+running both is useful, because a large gap between them says failures are
+clustered early in the window.
+
 ## What this adds
 
 | SLI | Answers |
 |---|---|
+| `CheckPassRate` | What fraction of checks passed, independent of the order they arrived in? |
 | `GateCoverage` | Of the requests the caller issued, what fraction reached a gate at all? |
 | `RefusalAttribution` | What fraction of refusals carry a reason the gate declared it could give? |
 | `with_sample_floor(AnySLI, n)` | Withholds `compliance()` below `n` measurements, for any SLI type including the built-ins |
@@ -56,7 +93,7 @@ from agent_sre.slo.indicators import PolicyCompliance, SLIRegistry
 from outcomes.registry import register, register_guarded
 
 registry = SLIRegistry()
-register(registry)                                    # GateCoverage, RefusalAttribution
+register(registry)                                # CheckPassRate, GateCoverage, RefusalAttribution
 register_guarded(registry, PolicyCompliance, 30)      # SampleFlooredPolicyCompliance
 ```
 
@@ -81,10 +118,10 @@ that gate actually gave:
 
 ```
 built-in, unqualified:
-  policy_compliance   0.451  over 319 measurements
+  policy_compliance   0.009  over 319 measurements
 
 with this package registered:
-  policy_compliance   0.451  (sample floor 30, sufficient=True)
+  policy_compliance   0.009  (sample floor 30, sufficient=True)
   gate_coverage       1.000  (0 requests reached no gate)
   refusal_attribution 1.000  (0 unexplained of 131 distinct reasons)
 
@@ -100,7 +137,11 @@ instrument agreeing with a well-behaved input is how you find out it is wired
 up, not evidence that it is useful. The last two lines are where it earns its
 place.
 
-**That 0.451 is not production traffic.** A refusal rate over demo recordings
+That `0.009` is the order-dependence above, on a corpus whose fourth decision
+is a refusal: the running rate leaves 1.0 early and never returns. The actual
+pass rate is 0.451.
+
+**And none of it is production traffic.** A refusal rate over demo recordings
 measures how a catalog chose to demonstrate itself; those recordings
 over-represent refusals deliberately. The instrument is what is being
 exercised.
@@ -115,7 +156,11 @@ that exists.
 
 ## Status
 
-Early. Three SLIs, 25 tests, one harness against a real corpus. Not yet
+Early. Four SLIs, 33 tests, one harness against a real corpus. Verified
+against the installed `agent-sre` 3.2.2 as well as the fallback: the extension
+SLIs subclass the real base, register into a real `SLIRegistry` alongside its
+eight built-ins, and the order-dependence finding is reproduced against the
+real implementation rather than a stand-in. Not yet
 covered: latency cost of a gate, fail-open detection, false-refusal
 classification (which needs a labelled ground truth), and anything
 longitudinal.

@@ -23,6 +23,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "outcomes"))
 
 from agt import SLI, SLIRegistry, TimeWindow, USING_AGENT_SRE  # noqa: E402
+from check_pass_rate import CheckPassRate
 from gate_coverage import GateCoverage  # noqa: E402
 from refusal_attribution import RefusalAttribution  # noqa: E402
 from registry import register, register_guarded  # noqa: E402
@@ -37,11 +38,20 @@ class PolicyComplianceStub(SLI):
     def __init__(self, name="policy_compliance", target=1.0, window=TimeWindow.DAY_1):
         super().__init__(name=name, target=target, window=window)
 
+    def __post_init__(self):  # pragma: no cover
+        pass
+
     def record_check(self, compliant: bool):
-        return self.record(1.0 if compliant else 0.0)
+        # Mirrors the installed implementation: a running cumulative rate, not
+        # the check. Diverging here would make the fallback path quietly
+        # disagree with the real one on the same input.
+        self._total = getattr(self, "_total", 0) + 1
+        self._compliant = getattr(self, "_compliant", 0) + (1 if compliant else 0)
+        return self.record(self._compliant / self._total)
 
     def collect(self):
-        return self.record(1.0)
+        total = getattr(self, "_total", 0)
+        return self.record(getattr(self, "_compliant", 0) / total if total else 1.0)
 
 
 def policy_compliance_type() -> type[SLI]:

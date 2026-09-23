@@ -204,7 +204,9 @@ class RegistryTests(unittest.TestCase):
         registry = SLIRegistry()
         names = register(registry)
 
-        self.assertEqual(names, ("GateCoverage", "RefusalAttribution"))
+        self.assertEqual(
+            names, ("CheckPassRate", "GateCoverage", "RefusalAttribution")
+        )
         self.assertIsNotNone(registry.get_type("GateCoverage"))
 
     def test_registering_adds_rather_than_replaces(self):
