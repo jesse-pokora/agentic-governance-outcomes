@@ -122,10 +122,13 @@ that gate actually gave:
 ```
 built-in, unqualified:
   policy_compliance   0.009  over 319 measurements
+                             ^ the fraction of the window during which nothing had failed yet,
+                               not the pass rate. See tests/test_order_dependence.py
 
 with this package registered:
   policy_compliance   0.009  (sample floor 30, sufficient=True)
   gate_coverage       1.000  (0 requests reached no gate)
+  check_pass_rate     0.451  (144/319 checks passed, order-independent)
   refusal_attribution 1.000  (0 unexplained of 131 distinct reasons)
 
 the same SLI over 1 measurement:

@@ -101,6 +101,10 @@ def main(argv: list[str]) -> int:
         plain.record_check(compliant)
         guarded.record_check(compliant)
 
+    pass_rate = CheckPassRate()
+    for _, outcome, _ in decisions:
+        pass_rate.record_check(outcome == "allowed")
+
     coverage = GateCoverage()
     coverage.record_interval(requests_issued=len(decisions),
                              decisions_recorded=len(decisions))
@@ -109,9 +113,15 @@ def main(argv: list[str]) -> int:
     for _, _, reason in refusals:
         attribution.record_refusal(reason)
 
+    # Both numbers on adjacent lines, deliberately. policy_compliance alone
+    # gets quoted as if it were the pass rate, and it is not.
     print("built-in, unqualified:")
     print(f"  policy_compliance   {plain.compliance():.3f}  "
           f"over {plain.to_dict()['measurement_count']} measurements")
+    print(f"                             ^ the fraction of the window during which "
+          f"nothing had failed yet,")
+    print(f"                               not the pass rate. See "
+          f"tests/test_order_dependence.py")
 
     print("\nwith this package registered:")
     print(f"  policy_compliance   {guarded.compliance():.3f}  "
@@ -119,6 +129,9 @@ def main(argv: list[str]) -> int:
           f"sufficient={guarded.sufficient_sample()})")
     print(f"  gate_coverage       {coverage.current_value():.3f}  "
           f"({coverage.undecided_requests()} requests reached no gate)")
+    print(f"  check_pass_rate     {pass_rate.compliance():.3f}  "
+          f"({pass_rate.passed()}/{pass_rate.checked()} checks passed, "
+          f"order-independent)")
     print(f"  refusal_attribution {attribution.compliance():.3f}  "
           f"({len(attribution.unexplained())} unexplained of "
           f"{len(attribution.by_reason())} distinct reasons)")
