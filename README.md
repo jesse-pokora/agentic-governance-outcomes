@@ -163,13 +163,17 @@ that exists.
 ## Status
 
 Early. Four SLIs, 33 tests, one harness against a real corpus. Verified
-against the installed `agent-sre` 3.2.2 as well as the fallback: the extension
+against the installed `agent-sre` 3.7.0 as well as the fallback: the extension
 SLIs subclass the real base, register into a real `SLIRegistry` alongside its
 eight built-ins, and the order-dependence finding is reproduced against the
 real implementation rather than a stand-in. Not yet
 covered: latency cost of a gate, fail-open detection, false-refusal
 classification (which needs a labelled ground truth), and anything
 longitudinal.
+
+CI installs `agent-sre` unpinned, so the order-dependence test above runs
+against whatever the current release is rather than a version frozen here — if
+upstream changes the behaviour, the suite is what says so.
 
 Not affiliated with or endorsed by Microsoft. MIT licensed. Built with Claude
 (Anthropic) as a pair; every commit carries the co-authorship.
