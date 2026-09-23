@@ -1,117 +1,137 @@
 #!/usr/bin/env python3
-"""Measure the enforcement outcomes of a real catalog of gates.
+"""Drive the extension SLIs from a real catalog of gates.
 
     python harness/measure_primitives.py [path-to-agentic-governance-primitives]
 
-The sibling repository, `agentic-governance-primitives`, is 59 gates whose demo
-recordings hold every allow and refuse decision those gates actually produced,
-with the reason each gave. That is real enforcement data from real code, which
-is why this harness exists and why it does not generate its own.
+The sibling repository is 59 gates whose demo recordings hold every allow and
+refuse decision those gates produced, with the reason each gave. Real output
+from real code, which is why this reads it rather than generating events.
 
-**It is not production traffic, and every number below describes a test
-corpus.** A refusal rate over demo recordings measures how a catalog chose to
-demonstrate itself. The instrument is what is being exercised here; the data is
-real enough to exercise it honestly and not real enough to mean anything
-operational. Saying that once, loudly, is cheaper than a reader inferring it
-later.
+**It is not production traffic.** A refusal rate over demo recordings measures
+how a catalog chose to demonstrate itself — those recordings over-represent
+refusals deliberately, because refusals are the point of a demonstration. What
+is being exercised here is the instrument.
 """
 
 from __future__ import annotations
 
 import json
 import sys
-from decimal import Decimal
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "outcomes"))
 
-from attribution import attribute  # noqa: E402
-from decision import Decision, Observation  # noqa: E402
-from denominator import DenominatorRejected, reconcile  # noqa: E402
-from rate import Measurement, evaluate  # noqa: E402
+from agt import SLI, SLIRegistry, TimeWindow, USING_AGENT_SRE  # noqa: E402
+from gate_coverage import GateCoverage  # noqa: E402
+from refusal_attribution import RefusalAttribution  # noqa: E402
+from registry import register, register_guarded  # noqa: E402
+from sample_floor import with_sample_floor  # noqa: E402
 
 DEFAULT_SOURCE = HERE.parents[1] / "agent-governance-apps"
 
 
-def load(primitives_root: Path) -> Observation:
-    """Read every recorded decision out of the sibling catalog."""
-    decisions: list[Decision] = []
-    tick = 0
+class PolicyComplianceStub(SLI):
+    """Stands in for `agent_sre`'s PolicyCompliance when it is not installed."""
 
+    def __init__(self, name="policy_compliance", target=1.0, window=TimeWindow.DAY_1):
+        super().__init__(name=name, target=target, window=window)
+
+    def record_check(self, compliant: bool):
+        return self.record(1.0 if compliant else 0.0)
+
+    def collect(self):
+        return self.record(1.0)
+
+
+def policy_compliance_type() -> type[SLI]:
+    if USING_AGENT_SRE:  # pragma: no cover - depends on the environment
+        from agent_sre.slo.indicators import PolicyCompliance
+
+        return PolicyCompliance
+    return PolicyComplianceStub
+
+
+def load(primitives_root: Path) -> tuple[list[tuple[str, str, str]], set[str]]:
+    """Return (gate, outcome, reason) per decision, and the reason vocabulary."""
     recordings = sorted(primitives_root.glob("apps/*/demo.json")) + sorted(
         primitives_root.glob("compositions/*/demo.json")
     )
     if not recordings:
         raise SystemExit(f"no recordings under {primitives_root}")
 
+    decisions, reasons = [], set()
     for recording in recordings:
         trace = json.loads(recording.read_text(encoding="utf-8"))
-        gate = trace["app"]
         for step in trace["steps"]:
-            tick += 1
-            if step["outcome"] == "allowed":
-                decisions.append(Decision(gate, "allowed", at=tick))
-            else:
-                decisions.append(
-                    Decision(gate, "refused", step["reason"] or "unstated", at=tick)
-                )
-
-    # Every request in this corpus produced a decision, because a recorded step
-    # *is* a decision. A real gate would supply this count from its own
-    # instrumentation, and the two would not always agree.
-    return Observation(tuple(decisions), len(decisions), str(primitives_root.name))
+            reason = step["reason"] or "unstated"
+            decisions.append((trace["app"], step["outcome"], reason))
+            if step["outcome"] == "denied":
+                reasons.add(reason)
+    return decisions, reasons
 
 
 def main(argv: list[str]) -> int:
     root = Path(argv[0]).resolve() if argv else DEFAULT_SOURCE
-    observation = load(root)
+    decisions, declared = load(root)
+    refusals = [d for d in decisions if d[1] == "denied"]
 
-    print(f"source: {observation.source}")
-    print(f"gates: {len(observation.gates())}")
-    print(f"decisions: {len(observation.decisions)} "
-          f"({len(observation.allowances())} allowed, "
-          f"{len(observation.refusals())} refused)\n")
+    print(f"source: {root.name}")
+    print(f"agent_sre installed: {USING_AGENT_SRE}"
+          f"{'' if USING_AGENT_SRE else '  (using the spec-faithful fallback)'}")
+    print(f"gates: {len({d[0] for d in decisions})}, decisions: {len(decisions)} "
+          f"({len(decisions) - len(refusals)} allowed, {len(refusals)} refused)\n")
 
-    denominator = reconcile(observation)
+    PolicyCompliance = policy_compliance_type()
+    Guarded = with_sample_floor(PolicyCompliance, minimum_sample=30)
 
-    measurement = Measurement(
-        name="refusal_rate",
-        window_ticks=len(observation.decisions),
-        minimum_sample=30,
-        budget=Decimal("0.60"),
-    )
-    result = evaluate(measurement, len(observation.refusals()), denominator)
-    rate = "n/a" if result.rate is None else f"{result.rate:.3f}"
-    print(f"{result.name}: {rate} ({result.numerator}/{result.denominator}) "
-          f"-> {result.status}, budget {result.budget}")
+    plain, guarded = PolicyCompliance(), Guarded()
+    for _, outcome, _ in decisions:
+        compliant = outcome == "allowed"
+        plain.record_check(compliant)
+        guarded.record_check(compliant)
 
-    # Every reason any gate in the catalog actually gave. A real deployment
-    # would declare this vocabulary up front; here it is harvested, which is
-    # exactly the weaker position and is worth seeing stated.
-    declared = {d.reason for d in observation.refusals()}
-    attribution = attribute(observation, declared)
-    print(f"\nrefusal reasons: {len(attribution.by_reason)} distinct, "
-          f"{attribution.attributed} attributed, "
-          f"{len(attribution.unexplained)} unexplained")
+    coverage = GateCoverage()
+    coverage.record_interval(requests_issued=len(decisions),
+                             decisions_recorded=len(decisions))
 
-    print("\nmost frequent refusals:")
-    for reason, count in sorted(attribution.by_reason, key=lambda p: -p[1])[:8]:
-        print(f"  {count:>3}  {reason}")
+    attribution = RefusalAttribution(declared)
+    for _, _, reason in refusals:
+        attribution.record_refusal(reason)
 
-    print("\nA refusal rate over demo recordings measures how a catalog chose "
-          "to demonstrate\nitself, not how a system behaves. The instrument is "
-          "what was exercised here.")
+    print("built-in, unqualified:")
+    print(f"  policy_compliance   {plain.compliance():.3f}  "
+          f"over {plain.to_dict()['measurement_count']} measurements")
 
-    # Demonstrate the denominator check against the case it exists for: a
-    # source that saw more requests than it produced decisions for.
-    leaky = Observation(observation.decisions, len(observation.decisions) + 12, "leaky")
-    try:
-        reconcile(leaky)
-    except DenominatorRejected as refusal:
-        print(f"\nwith 12 requests unaccounted for: {refusal.reason} "
-              f"-- {refusal.detail}")
+    print("\nwith this package registered:")
+    print(f"  policy_compliance   {guarded.compliance():.3f}  "
+          f"(sample floor {guarded.minimum_sample}, "
+          f"sufficient={guarded.sufficient_sample()})")
+    print(f"  gate_coverage       {coverage.current_value():.3f}  "
+          f"({coverage.undecided_requests()} requests reached no gate)")
+    print(f"  refusal_attribution {attribution.compliance():.3f}  "
+          f"({len(attribution.unexplained())} unexplained of "
+          f"{len(attribution.by_reason())} distinct reasons)")
 
+    # The case the guard exists for: a window with almost nothing in it.
+    thin = Guarded()
+    thin.record_check(True)
+    print(f"\nthe same SLI over 1 measurement:")
+    print(f"  built-in            {PolicyCompliance().__class__.__name__}"
+          f" would report 1.000")
+    print(f"  sample-floored      {thin.compliance()}  "
+          f"(withheld; {len(thin.values_in_window())} < {thin.minimum_sample})")
+
+    registry = SLIRegistry()
+    added = register(registry)
+    guarded_name = register_guarded(registry, PolicyCompliance, minimum_sample=30)
+    print(f"\nregistered into an SLIRegistry: {', '.join(added + (guarded_name,))}")
+    print(f"registry now lists {len(registry.list_types())} SLI types, "
+          f"none replaced")
+
+    print("\nA refusal rate over demo recordings measures how a catalog chose to "
+          "demonstrate\nitself, not how a system behaves. The instrument is what "
+          "was exercised here.")
     return 0
 
 

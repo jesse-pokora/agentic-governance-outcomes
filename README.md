@@ -1,106 +1,124 @@
 # Agentic Governance Outcomes
 
-**Measuring what enforcement actually did.** Not whether a gate exists, and not
-whether it refuses correctly in a test — how often it refused in practice, how
-many of those refusals were wrong, and what it cost.
+**Three SLIs that make the other SLIs interpretable.** An extension for
+[microsoft/agent-governance-toolkit](https://github.com/microsoft/agent-governance-toolkit),
+written against *Agent SRE Governance 1.0* section 4 and registered through the
+`SLIRegistry` extension point the spec provides.
 
-Sibling to
-[agentic-governance-primitives](https://github.com/jesse-pokora/agentic-governance-primitives),
-which demonstrates the gates. This repository measures their outcomes, and the
-two are deliberately separate because they need different things to be true:
-a demonstration needs a fixture, a measurement needs traffic.
+Nothing here replaces anything. Every built-in keeps its behaviour; these are
+additional SLI types that answer a question the built-ins do not: **can the
+number beside this one be believed?**
 
-## The four jobs, and which one this is
+## The gap
 
-| Job | What it means | Where |
-|---|---|---|
-| **Enforce** | The gate refuses. The effect does not happen. | primitives |
-| **Attest** | What happened is provable and tamper-evident. | primitives |
-| **Measure outcomes** | How often it refused, how many were wrong, what it cost. | **here** |
-| **Audit the claim** | Is the report about all of the above trustworthy? | primitives, v1.5 |
+`SLI.compliance()` returns `good / len(values)`. Three consequences follow from
+that line, and none of them is a bug — they are simply outside what a rate can
+express:
 
-A governance suite that only does the first two can tell you a control exists
-and cannot tell you whether it is doing anything. A rate is what closes that,
-and a rate is a much easier number to produce than to trust.
+**One measurement gives 1.0.** A `policy_compliance` of 1.0 drawn from a single
+check is reported exactly like one drawn from thirty thousand. `to_dict()` does
+carry `measurement_count`, so the information exists — but it sits *beside* the
+number rather than *in* it, and the number is what gets quoted into a slide.
 
-## The thesis: a rate is easy to compute and hard to trust
+**Requests that bypassed the gate are invisible.** `PolicyCompliance.record_check()`
+is called when a check happens. A request that failed before reaching the gate,
+or routed around it, never calls it — so it is absent from the numerator and
+the denominator alike, and compliance stays perfect. The figure is not wrong
+about what it measured; it is silent about what it never saw.
 
-Everything here is about what has to be true *before* a number means anything.
-Four preconditions, each with a module, each refusing rather than reporting
-when it is not met:
+**A policy refusal and an evaluator crash are the same boolean.**
+`record_check(compliant=False)` cannot distinguish "the policy said no" from
+"the evaluator raised", so the resulting rate is part policy and part defect
+with no way to separate them.
 
-**The denominator has to be known.** Refusals are easy to count — every one
-emits an event. Requests are not: anything that bypassed the gate, crashed
-before reaching it, or was dropped in between leaves no decision behind. So the
-request count is supplied by the source and *reconciled* against the decisions
-recorded. When they disagree, some requests reached no gate, and the rate
-understates by an unknown amount. `denominator.py` refuses to produce a
-denominator rather than report that number.
+## What this adds
 
-The comfortable failure is a refusal rate that looks reassuringly low precisely
-because the unchecked requests were missing from the denominator too.
+| SLI | Answers |
+|---|---|
+| `GateCoverage` | Of the requests the caller issued, what fraction reached a gate at all? |
+| `RefusalAttribution` | What fraction of refusals carry a reason the gate declared it could give? |
+| `with_sample_floor(AnySLI, n)` | Withholds `compliance()` below `n` measurements, for any SLI type including the built-ins |
 
-**Every refusal has to be attributable.** A gate that refuses for a reason
-nobody declared has a bug, not a data point, and counting it produces a number
-that is partly policy and partly defect with no way to separate them.
-`attribution.py` reconciles reasons against the declared vocabulary and reports
-unknown ones as a defect list rather than folding them into the numerator.
+`with_sample_floor` returns **`None`** below the floor, which is deliberate:
+the base contract already returns `None` from `compliance()` on an empty
+window, so every consumer handles it today. "Not enough evidence yet" and "no
+evidence yet" are the same statement at different sample sizes and should not
+need different handling.
 
-It also reports **declared rules that never fired** — not a defect, but the
-question worth asking: is the rule guarding something that does not happen, or
-has the case that triggers it never been exercised?
+The result is a subclass, so it registers, serializes and aggregates exactly
+like the type it wraps — and it registers *alongside* the original, so adopting
+the guard is a per-deployment choice rather than a change forced on everyone.
 
-**The window, the sample floor and the budget have to be fixed first.** All
-three get set after seeing the number, routinely. A window chosen afterwards
-can make almost any rate; a threshold chosen afterwards is a description, not a
-threshold. `Measurement` is frozen at construction, and below the minimum
-sample `rate.py` returns `insufficient_sample` **instead of a percentage** —
-because one refusal in three requests is 33%, and a number with a caveat
-attached gets quoted without the caveat.
+## Using it
 
-**A decision has to know its own provenance.** `Decision` refuses to exist
-without a gate and, for a refusal, without a reason.
+```python
+from agent_sre.slo.indicators import PolicyCompliance, SLIRegistry
+from outcomes.registry import register, register_guarded
 
-## Try it on real data
+registry = SLIRegistry()
+register(registry)                                    # GateCoverage, RefusalAttribution
+register_guarded(registry, PolicyCompliance, 30)      # SampleFlooredPolicyCompliance
+```
+
+`outcomes/agt.py` imports the real `SLI`, `SLIValue`, `TimeWindow` and
+`SLIRegistry` from `agent_sre` when it is installed, and falls back to a
+spec-faithful implementation of section 4 when it is not — so the package is
+testable on its own and drop-in when it is not. The fallback exists to keep the
+tests honest, not to fork the contract: if the two ever disagree, the installed
+implementation is right.
+
+## Seeing it work
 
 ```bash
 python -m unittest discover -s tests -p 'test_*.py'
 python harness/measure_primitives.py [path-to-primitives-repo]
 ```
 
-The harness reads the sibling catalog's demo recordings: **319 real allow and
-refuse decisions from 60 gates**, each with the reason that gate actually gave.
-That is real enforcement data produced by real code, which is why this repo
-measures it instead of generating its own events.
+The harness reads the sibling catalog
+[agentic-governance-primitives](https://github.com/jesse-pokora/agentic-governance-primitives)
+— **319 real allow and refuse decisions from 60 gates**, each with the reason
+that gate actually gave:
 
 ```
-gates: 60
-decisions: 319 (144 allowed, 175 refused)
-refusal_rate: 0.549 (175/319) -> within_budget, budget 0.60
-refusal reasons: 131 distinct, 175 attributed, 0 unexplained
+built-in, unqualified:
+  policy_compliance   0.451  over 319 measurements
+
+with this package registered:
+  policy_compliance   0.451  (sample floor 30, sufficient=True)
+  gate_coverage       1.000  (0 requests reached no gate)
+  refusal_attribution 1.000  (0 unexplained of 131 distinct reasons)
+
+the same SLI over 1 measurement:
+  built-in            would report 1.000
+  sample-floored      None  (withheld; 1 < 30)
 ```
 
-## What that number is not
+Note what the corpus scores: coverage and attribution both 1.0. That is the
+expected result for a catalog whose gates all declare fixed refusal
+vocabularies and whose every recorded request produced a decision — the
+instrument agreeing with a well-behaved input is how you find out it is wired
+up, not evidence that it is useful. The last two lines are where it earns its
+place.
 
-**It is not production traffic, and 0.549 describes a test corpus.** A refusal
-rate over demo recordings measures how a catalog chose to demonstrate itself —
-those recordings over-represent refusals on purpose, because refusals are what
-the demonstrations are about. The instrument is what is being exercised there;
-the data is real enough to exercise it honestly and not real enough to mean
-anything operational.
+**That 0.451 is not production traffic.** A refusal rate over demo recordings
+measures how a catalog chose to demonstrate itself; those recordings
+over-represent refusals deliberately. The instrument is what is being
+exercised.
 
-This limit is structural rather than a gap to close. Row three needs a gate
-that sees real requests at real volume, so the honest form of this repository
-is **an instrument plus the preconditions it enforces**, ready to be pointed at
-traffic that exists. Generating synthetic traffic to produce a more impressive
-number would measure the generator.
+## Why it is a separate repository
+
+The sibling catalog demonstrates gates against fixtures. Measuring outcomes
+needs traffic. Those are different constraints, so mixing them would force one
+of the two to pretend — and the honest form of an outcome measure is an
+instrument plus the preconditions it enforces, ready to be pointed at traffic
+that exists.
 
 ## Status
 
-Early. Four modules, 21 tests, one harness against a real corpus. Not yet
+Early. Three SLIs, 25 tests, one harness against a real corpus. Not yet
 covered: latency cost of a gate, fail-open detection, false-refusal
 classification (which needs a labelled ground truth), and anything
 longitudinal.
 
-MIT licensed. Built with Claude (Anthropic) as a pair; every commit carries the
-co-authorship.
+Not affiliated with or endorsed by Microsoft. MIT licensed. Built with Claude
+(Anthropic) as a pair; every commit carries the co-authorship.
